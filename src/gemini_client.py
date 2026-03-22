@@ -1,14 +1,23 @@
-"""Geração de 3 variações de copy (assunto + corpo) com Gemini."""
+"""Geração de 3 variações de copy (assunto + corpo) com Gemini via Replit AI Integrations."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, List
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-from .config import GEMINI_API_KEY, GEMINI_MODEL
+
+def _get_client() -> genai.Client:
+    base_url = os.environ.get("AI_INTEGRATIONS_GEMINI_BASE_URL")
+    api_key = os.environ.get("AI_INTEGRATIONS_GEMINI_API_KEY")
+    return genai.Client(api_key=api_key, http_options={"base_url": base_url})
+
+
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 def _parse_json_array(text: str) -> List[dict[str, Any]]:
@@ -42,11 +51,7 @@ def gerar_variacoes_copy(
     Retorna lista de até 3 itens: {"assunto": str, "corpo_html": str}.
     Textos devem usar os placeholders {{CIDADE}} e {{CATEGORIA}} para personalização em massa.
     """
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY não configurada no .env")
-
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    client = _get_client()
 
     prompt = f"""Você é copywriter B2G para o produto IAE Smart Guide (guia inteligente para secretarias de turismo).
 
@@ -68,20 +73,17 @@ Regras obrigatórias:
 
 Responda somente o JSON, sem markdown."""
 
-    try:
-        resp = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.85,
-            ),
-        )
-        raw = (resp.text or "").strip()
-    except Exception:
-        resp = model.generate_content(prompt)
-        raw = (resp.text or "").strip()
+    resp = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.85,
+        ),
+    )
 
+    raw = (resp.text or "").strip()
     data = _parse_json_array(raw)
+
     out: List[dict[str, str]] = []
     for item in data[:3]:
         if not isinstance(item, dict):
