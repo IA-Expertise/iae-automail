@@ -96,7 +96,7 @@ Regras obrigatórias:
 - No ASSUNTO e no CORPO use os placeholders literais {{{{CIDADE}}}} e {{{{CATEGORIA}}}} para personalização em massa (não use nomes reais de cidades).
 - Tom respeitoso, profissional, objetivo.
 - Corpo em HTML simples: <p>, <strong>, <ul> quando fizer sentido.
-- Inclua pelo menos um link para https://www.iaesmartguide.com.br (texto âncora ou URL visível).
+- Inclua pelo menos um link para o site usando âncora HTML curta, ex.: <a href="https://www.iaesmartguide.com.br">IAE Smart Guide</a> — não deixe URL longa solta no texto.
 - Evite emojis excessivos (no máximo 1 se fizer sentido).
 - Saída APENAS em JSON válido: um objeto com chaves exatamente "assunto" e "corpo_html".
 

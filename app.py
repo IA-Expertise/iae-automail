@@ -34,7 +34,7 @@ from src.mailer import (
     enviar_email_avancado,
 )
 from src.planilhas_store import listar_planilhas, nome_seguro, PLANILHAS_DIR
-from src.utm_tracker import inject_utm_in_html
+from src.utm_tracker import preparar_links_campanha
 
 COL_CIDADE = "Cidade"
 COL_EMAIL = "E-mail da Secretaria de Turismo"
@@ -273,10 +273,15 @@ def main() -> None:
     st.subheader("Aparência e anexos")
     _garantir_dirs_midia()
 
+    usar_testeira = st.checkbox(
+        "Incluir testeira (faixa visual no topo, sem upload)",
+        value=True,
+        help="Faixa com gradiente e título IAE Smart Guide — não usa arquivo de imagem.",
+    )
     usar_banner = st.checkbox(
-        "Incluir imagem no topo do e-mail (layout mais impactante)",
+        "Incluir foto/imagem abaixo da testeira (opcional)",
         value=False,
-        help="A imagem é embutida no e-mail (inline). Boas opções: quiosque, tela do app ou logo em alta resolução.",
+        help="Requer upload; alguns servidores limitam tamanho de imagem inline. Se der erro, deixe só a testeira.",
     )
     img_up = st.file_uploader(
         "Imagem do banner (PNG, JPG ou WebP)",
@@ -306,7 +311,7 @@ def main() -> None:
     banner_disk = Path(st.session_state["banner_path"]) if st.session_state.get("banner_path") else None
     pdf_disk = Path(st.session_state["pdf_path"]) if st.session_state.get("pdf_path") else None
     if usar_banner and (not banner_disk or not banner_disk.exists()):
-        st.info("Envie uma imagem acima para o banner aparecer no e-mail.")
+        st.info("Para usar foto no topo, envie uma imagem acima — ou desmarque e use só a testeira.")
 
     st.divider()
     st.subheader("Envio de teste")
@@ -339,9 +344,11 @@ def main() -> None:
                 cidade_ex,
                 categoria_ex,
             )
-            corpo_ex = inject_utm_in_html(corpo_ex, utm_campaign or "prospeccao", cidade_ex)
+            corpo_ex = preparar_links_campanha(corpo_ex, utm_campaign or "prospeccao", cidade_ex)
             com_b = usar_banner and banner_disk is not None and banner_disk.exists()
-            html_body = aplicar_layout_email(corpo_ex, com_b)
+            html_body = aplicar_layout_email(
+                corpo_ex, com_testeira=usar_testeira, com_imagem=com_b
+            )
             pdf_p = pdf_disk if anexar_pdf and pdf_disk and pdf_disk.exists() else None
             img_p = banner_disk if com_b else None
             try:
@@ -416,8 +423,10 @@ def main() -> None:
                 email = str(row[COL_EMAIL]).strip()
 
                 assunto, corpo = aplicar_placeholders(assunto_tpl, corpo_tpl, cidade, categoria)
-                corpo = inject_utm_in_html(corpo, utm_campaign or "prospeccao", cidade)
-                html_body = aplicar_layout_email(corpo, com_b)
+                corpo = preparar_links_campanha(corpo, utm_campaign or "prospeccao", cidade)
+                html_body = aplicar_layout_email(
+                    corpo, com_testeira=usar_testeira, com_imagem=com_b
+                )
 
                 fila.aguardar_vaga_hora()
                 try:
