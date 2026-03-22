@@ -111,7 +111,7 @@ def main() -> None:
                 else:
                     PLANILHAS_DIR.mkdir(parents=True, exist_ok=True)
                     dest = PLANILHAS_DIR / nome_seguro(up.name)
-                    dest.write_bytes(up.getbuffer())
+                    dest.write_bytes(up.getvalue())
                     st.success(f"Salvo: {dest.name}")
                     st.rerun()
         with c2:
@@ -121,7 +121,7 @@ def main() -> None:
                 elif arquivo_path is None:
                     st.warning("Não há planilha selecionada.")
                 else:
-                    arquivo_path.write_bytes(up.getbuffer())
+                    arquivo_path.write_bytes(up.getvalue())
                     st.success(f"Atualizado: {arquivo_path.name}")
                     st.rerun()
 
@@ -291,9 +291,9 @@ def main() -> None:
     if img_up is not None:
         ext = Path(img_up.name).suffix.lower() or ".png"
         banner_path = EMAIL_ASSETS_DIR / f"banner_campanha{ext}"
-        banner_path.write_bytes(img_up.getbuffer())
+        banner_path.write_bytes(img_up.getvalue())
         st.session_state["banner_path"] = str(banner_path)
-        st.image(img_up.getbuffer(), caption="Prévia do banner", width=400)
+        st.image(img_up.getvalue(), caption="Prévia do banner", width=400)
 
     anexar_pdf = st.checkbox("Anexar PDF (apresentação leve)", value=False)
     pdf_up = st.file_uploader("Arquivo PDF", type=["pdf"], help="Prefira arquivos pequenos (ex.: até 2–3 MB) para boa entrega.")
@@ -304,7 +304,7 @@ def main() -> None:
         if not raw_name.lower().endswith(".pdf"):
             raw_name = f"{raw_name}.pdf"
         pdf_path = ANEXOS_DIR / raw_name
-        pdf_path.write_bytes(pdf_up.getbuffer())
+        pdf_path.write_bytes(pdf_up.getvalue())
         st.session_state["pdf_path"] = str(pdf_path)
         st.caption(f"Salvo: {pdf_path.name}")
 
