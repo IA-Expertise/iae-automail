@@ -35,3 +35,12 @@ outputType = "webview"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[userenv]
+
+[userenv.shared]
+SMTP_HOST = "mail.iaesmartguide.com.br"
+SMTP_PORT = "587"
+FROM_EMAIL = "turismo@iaesmartguide.com.br"
+SMTP_USER = "turismo@iaesmartguide.com.br"
+GEMINI_MODEL = "gemini-2.0-flash"
