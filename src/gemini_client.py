@@ -14,7 +14,13 @@ from google.genai import types
 def _get_client() -> genai.Client:
     base_url = os.environ.get("AI_INTEGRATIONS_GEMINI_BASE_URL")
     api_key = os.environ.get("AI_INTEGRATIONS_GEMINI_API_KEY")
-    return genai.Client(api_key=api_key, http_options={"base_url": base_url})
+    return genai.Client(
+        api_key=api_key,
+        http_options={
+            "api_version": "",
+            "base_url": base_url,
+        }
+    )
 
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
