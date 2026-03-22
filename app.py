@@ -156,7 +156,7 @@ def main() -> None:
         st.metric("Bloqueados por blacklist", bl)
 
     st.subheader("Prévia dos dados (após processamento)")
-    st.dataframe(df_work.head(20), use_container_width=True)
+    st.dataframe(df_work, use_container_width=True)
 
     st.divider()
     st.subheader("Criação de campanha com IA (Gemini)")
