@@ -72,7 +72,13 @@ def main() -> None:
         else:
             arquivo_escolhido = st.selectbox("Planilha em /dados", options=opcoes, index=0)
 
-        upload = st.file_uploader("Ou envie um CSV", type=["csv"])
+        upload = st.file_uploader("Enviar nova planilha CSV", type=["csv"])
+        if upload is not None:
+            destino = DADOS_DIR / upload.name
+            DADOS_DIR.mkdir(parents=True, exist_ok=True)
+            destino.write_bytes(upload.getvalue())
+            st.success(f"Planilha '{upload.name}' salva!")
+            st.rerun()
 
         st.header("Campanha (UTM)")
         utm_campaign = st.text_input(
@@ -93,9 +99,7 @@ def main() -> None:
 
     # Carregar DataFrame
     df: pd.DataFrame | None = None
-    if upload is not None:
-        df = pd.read_csv(upload)
-    elif arquivo_escolhido:
+    if arquivo_escolhido:
         path = DADOS_DIR / arquivo_escolhido
         df = pd.read_csv(path)
 
