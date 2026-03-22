@@ -44,7 +44,7 @@ SMTP_HOST = "smtp.dreamhost.com"
 SMTP_PORT = "587"
 FROM_EMAIL = "turismo@iaesmartguide.com.br"
 SMTP_USER = "turismo@iaesmartguide.com.br"
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 [deployment]
 deploymentTarget = "vm"
