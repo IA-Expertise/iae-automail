@@ -6,6 +6,7 @@ Execute: streamlit run app.py
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -40,6 +41,118 @@ COL_CIDADE = "Cidade"
 COL_EMAIL = "E-mail da Secretaria de Turismo"
 COL_SITE = "Site (Domínio Oficial)"
 COL_CATEGORIA = "Categoria"
+
+
+def _montar_relatorio_txt(
+    ult: dict,
+    sucessos: list[dict],
+    erros: list[dict],
+    quando: str,
+    utm: str,
+) -> str:
+    linhas = [
+        "IAE Sales Engine — Relatório de envio",
+        "=" * 44,
+        f"Data/hora: {quando}",
+        f"utm_campaign: {utm}",
+        "",
+        "Resumo",
+        "-" * 20,
+        f"Total previsto nesta execução: {ult.get('total', 0)}",
+        f"Enviados com sucesso: {ult.get('sucesso', 0)}",
+        f"Falhas: {ult.get('erros', 0)}",
+        "",
+        "Sucessos (ordem de envio)",
+        "-" * 20,
+    ]
+    for i, s in enumerate(sucessos, 1):
+        linhas.append(f"{i}. {s['email']} — {s.get('cidade', '')}")
+    if not sucessos:
+        linhas.append("(nenhum)")
+    linhas.extend(["", "Erros", "-" * 20])
+    for i, e in enumerate(erros, 1):
+        linhas.append(f"{i}. {e['email']}")
+        linhas.append(f"   {e.get('erro', '')}")
+    if not erros:
+        linhas.append("(nenhum)")
+    linhas.append("")
+    linhas.append("— Fim do relatório —")
+    return "\n".join(linhas)
+
+
+def _montar_relatorio_csv(sucessos: list[dict], erros: list[dict]) -> bytes:
+    rows: list[dict] = []
+    for s in sucessos:
+        rows.append(
+            {
+                "resultado": "sucesso",
+                "email": s["email"],
+                "cidade": s.get("cidade", ""),
+                "erro": "",
+            }
+        )
+    for e in erros:
+        rows.append(
+            {
+                "resultado": "erro",
+                "email": e["email"],
+                "cidade": "",
+                "erro": e.get("erro", ""),
+            }
+        )
+    df = pd.DataFrame(rows)
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+
+def _normalizar_erros_sessao() -> tuple[list[dict], list[dict]]:
+    sucessos = list(st.session_state.get("last_successes") or [])
+    err_raw = st.session_state.get("last_errors") or []
+    if not err_raw:
+        return sucessos, []
+    if isinstance(err_raw[0], dict):
+        return sucessos, err_raw
+    out: list[dict] = []
+    for x in err_raw:
+        s = str(x)
+        if ":" in s:
+            a, b = s.split(":", 1)
+            out.append({"email": a.strip(), "erro": b.strip()})
+        else:
+            out.append({"email": "", "erro": s})
+    return sucessos, out
+
+
+def _secao_download_relatorio() -> None:
+    ult = st.session_state.get("ultimo_envio")
+    if not ult:
+        return
+    sucessos, erros = _normalizar_erros_sessao()
+    quando = st.session_state.get("relatorio_em", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    utm = st.session_state.get("relatorio_utm", "")
+    slug = quando.replace(":", "-").replace(" ", "_")[:19]
+
+    txt = _montar_relatorio_txt(ult, sucessos, erros, quando, utm)
+    csv_bytes = _montar_relatorio_csv(sucessos, erros)
+
+    st.subheader("Relatório para download")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            label="Baixar relatório (.txt)",
+            data=txt.encode("utf-8"),
+            file_name=f"relatorio_envio_{slug}.txt",
+            mime="text/plain; charset=utf-8",
+        )
+    with c2:
+        st.download_button(
+            label="Baixar planilha (.csv)",
+            data=csv_bytes,
+            file_name=f"relatorio_envio_{slug}.csv",
+            mime="text/csv",
+        )
+    st.caption(
+        "Para PDF: abra o .txt no Word/LibreOffice e exporte como PDF, ou use Imprimir → Salvar como PDF."
+    )
 
 
 def _garantir_categoria(df: pd.DataFrame) -> pd.DataFrame:
@@ -375,6 +488,7 @@ def main() -> None:
 
     if st.button("Enviar campanha", type="primary"):
         st.session_state["last_errors"] = []
+        st.session_state["last_successes"] = []
         if not st.session_state.get("assunto_campanha") or not st.session_state.get("corpo_campanha"):
             st.error("Gere a mensagem com a IA ou preencha assunto e corpo.")
             return
@@ -444,9 +558,10 @@ def main() -> None:
                     )
                     fila.registrar_envio()
                     sucesso += 1
+                    st.session_state["last_successes"].append({"email": email, "cidade": cidade})
                 except Exception as e:
                     erros += 1
-                    st.session_state["last_errors"].append(f"{email}: {e}")
+                    st.session_state["last_errors"].append({"email": email, "erro": str(e)})
 
                 progress.progress((i + 1) / max(total, 1))
                 log_box.caption(f"Processados: {i + 1}/{total} | OK: {sucesso} | Erro: {erros}")
@@ -461,6 +576,8 @@ def main() -> None:
             "erros": erros,
             "total": total,
         }
+        st.session_state["relatorio_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state["relatorio_utm"] = utm_campaign or "prospeccao"
 
         st.subheader("Resultado")
         res_df = pd.DataFrame({"Tipo": ["Sucesso", "Erros"], "Quantidade": [sucesso, erros]})
@@ -472,8 +589,15 @@ def main() -> None:
 
         if st.session_state.get("last_errors"):
             with st.expander("Últimos erros"):
-                for line in st.session_state["last_errors"][-20:]:
-                    st.text(line)
+                for row in st.session_state["last_errors"][-20:]:
+                    if isinstance(row, dict):
+                        st.text(f"{row.get('email', '')}: {row.get('erro', '')}")
+                    else:
+                        st.text(str(row))
+
+    if st.session_state.get("ultimo_envio"):
+        st.divider()
+        _secao_download_relatorio()
 
 
 if __name__ == "__main__":
