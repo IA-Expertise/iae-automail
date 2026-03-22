@@ -48,4 +48,4 @@ GEMINI_MODEL = "gemini-2.0-flash"
 
 [deployment]
 deploymentTarget = "vm"
-run = ["streamlit", "run", "app.py", "--server.port=5000", "--server.address=0.0.0.0"]
+run = ["streamlit", "run", "app.py"]
