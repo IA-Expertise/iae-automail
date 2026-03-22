@@ -40,7 +40,7 @@ externalPort = 80
 [userenv]
 
 [userenv.shared]
-SMTP_HOST = "mail.iaesmartguide.com.br"
+SMTP_HOST = "smtp.dreamhost.com"
 SMTP_PORT = "587"
 FROM_EMAIL = "turismo@iaesmartguide.com.br"
 SMTP_USER = "turismo@iaesmartguide.com.br"
