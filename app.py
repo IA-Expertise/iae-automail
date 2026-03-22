@@ -183,6 +183,47 @@ def main() -> None:
                 st.markdown(item.get("corpo_html", ""), unsafe_allow_html=True)
 
     st.divider()
+    st.subheader("Envio de teste")
+
+    col_teste1, col_teste2 = st.columns([3, 1])
+    with col_teste1:
+        email_teste = st.text_input(
+            "E-mail para teste",
+            placeholder="seuemail@exemplo.com",
+            help="Envia uma prévia da variação escolhida para validar antes de disparar a campanha.",
+        )
+    with col_teste2:
+        st.write("")
+        st.write("")
+        btn_teste = st.button("Enviar teste", use_container_width=True)
+
+    if btn_teste:
+        if not email_teste:
+            st.warning("Digite um endereço de e-mail para o teste.")
+        elif "variacoes_ia" not in st.session_state:
+            st.error("Gere as variações com Gemini antes de enviar o teste.")
+        elif not ok_smtp:
+            st.error("Configure SMTP_USER e SMTP_PASSWORD nas variáveis de ambiente.")
+        else:
+            variacoes = st.session_state["variacoes_ia"]
+            escolha = variacoes[int(idx_var) - 1]
+            cidade_ex = str(df_work.iloc[0][COL_CIDADE]) if not df_work.empty else "Cidade Exemplo"
+            categoria_ex = str(df_work.iloc[0][COL_CATEGORIA]) if not df_work.empty else "Categoria Exemplo"
+            assunto_ex, corpo_ex = aplicar_placeholders(
+                escolha["assunto"], escolha["corpo_html"], cidade_ex, categoria_ex
+            )
+            corpo_ex = inject_utm_in_html(corpo_ex, utm_campaign or "prospeccao", cidade_ex)
+            try:
+                enviar_email_html(
+                    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
+                    FROM_EMAIL, email_teste,
+                    f"[TESTE] {assunto_ex}", corpo_ex,
+                )
+                st.success(f"E-mail de teste enviado para {email_teste}!")
+            except Exception as e:
+                st.error(f"Falha ao enviar teste: {e}")
+
+    st.divider()
     st.subheader("Envio")
 
     limite_teste = st.number_input("Máximo de e-mails nesta execução (0 = todos elegíveis)", min_value=0, value=0)
