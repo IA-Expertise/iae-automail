@@ -1,11 +1,11 @@
-"""Geração de 3 variações de copy (assunto + corpo) com Gemini via Replit AI Integrations."""
+"""Geração de mensagem de campanha (assunto + corpo) com Gemini (Replit AI ou API Google)."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
-from typing import Any, List
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -13,25 +13,36 @@ from google.genai import types
 
 def _get_client() -> genai.Client:
     base_url = os.environ.get("AI_INTEGRATIONS_GEMINI_BASE_URL")
-    api_key = os.environ.get("AI_INTEGRATIONS_GEMINI_API_KEY")
-    return genai.Client(
-        api_key=api_key,
-        http_options={
-            "api_version": "",
-            "base_url": base_url,
-        }
-    )
+    api_key = os.environ.get("AI_INTEGRATIONS_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "Configure AI_INTEGRATIONS_GEMINI_API_KEY (Replit) ou GEMINI_API_KEY no ambiente."
+        )
+    if base_url:
+        return genai.Client(
+            api_key=api_key,
+            http_options={
+                "api_version": "",
+                "base_url": base_url,
+            },
+        )
+    return genai.Client(api_key=api_key)
 
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
-def _parse_json_array(text: str) -> List[dict[str, Any]]:
+def _parse_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
-    m = re.search(r"\[[\s\S]*\]", text)
+    m = re.search(r"\{[\s\S]*\}", text)
     if m:
         text = m.group(0)
-    return json.loads(text)
+    data = json.loads(text)
+    if isinstance(data, list) and data:
+        data = data[0]
+    if not isinstance(data, dict):
+        raise ValueError("Resposta JSON inválida da IA.")
+    return data
 
 
 def aplicar_placeholders(assunto: str, corpo_html: str, cidade: str, categoria: str) -> tuple[str, str]:
@@ -48,34 +59,46 @@ def aplicar_placeholders(assunto: str, corpo_html: str, cidade: str, categoria: 
     return subj, body
 
 
-def gerar_variacoes_copy(
+def gerar_mensagem_campanha(
     cidade_exemplo: str,
     categoria_exemplo: str,
     site_oficial: str,
-) -> List[dict[str, str]]:
+    instrucoes_estrategia: str,
+) -> dict[str, str]:
     """
-    Retorna lista de até 3 itens: {"assunto": str, "corpo_html": str}.
-    Textos devem usar os placeholders {{CIDADE}} e {{CATEGORIA}} para personalização em massa.
+    Uma única mensagem (assunto + corpo HTML) com placeholders {{CIDADE}} e {{CATEGORIA}}.
+    `instrucoes_estrategia` contém produtos, serviços e tom desejados pelo usuário.
     """
     client = _get_client()
 
+    instr = (instrucoes_estrategia or "").strip()
+    if not instr:
+        instr = (
+            "Destaque o IAE Smart Guide como solução para gestão e promoção do destino. "
+            "Tom profissional e respeitoso ao Secretário(a) de Turismo."
+        )
+
     prompt = f"""Você é copywriter B2G para o produto IAE Smart Guide (guia inteligente para secretarias de turismo).
 
-Exemplo de contexto (use só para tom; no texto final use placeholders, não o nome real):
+Contexto de exemplo (tom e segmento; no texto use placeholders, não nomes reais de cidades):
 - Cidade exemplo: {cidade_exemplo}
 - Categoria exemplo: {categoria_exemplo}
-- Site oficial (referência): {site_oficial}
+- Site oficial do município (referência): {site_oficial}
 
-Tarefa: gere exatamente 3 variações de e-mail de prospecção para o Secretário(a) de Turismo.
-Foco na dor: falta de dados para decisão, promoção do destino, atendimento ao visitante e modernização da gestão.
+Instruções do usuário (estratégia, produtos, serviços, proposta de valor — siga com prioridade):
+---
+{instr}
+---
+
+Tarefa: gere UM único e-mail de prospecção para o Secretário(a) de Turismo, alinhado às instruções acima.
 
 Regras obrigatórias:
-- No ASSUNTO e no CORPO use os placeholders literais {{{{CIDADE}}}} e {{{{CATEGORIA}}}} onde houver personalização (não escreva nomes de cidades reais).
+- No ASSUNTO e no CORPO use os placeholders literais {{{{CIDADE}}}} e {{{{CATEGORIA}}}} para personalização em massa (não use nomes reais de cidades).
 - Tom respeitoso, profissional, objetivo.
-- Cada variação: assunto curto + corpo em HTML simples (parágrafos <p>, pode usar <strong>, listas <ul>).
-- Inclua pelo menos um link para https://www.iaesmartguide.com.br (pode ser na home ou texto âncora).
-- Não use emojis excessivos (no máximo 1 por e-mail se fizer sentido).
-- Saída APENAS em JSON válido: array de 3 objetos com chaves exatamente: "assunto", "corpo_html".
+- Corpo em HTML simples: <p>, <strong>, <ul> quando fizer sentido.
+- Inclua pelo menos um link para https://www.iaesmartguide.com.br (texto âncora ou URL visível).
+- Evite emojis excessivos (no máximo 1 se fizer sentido).
+- Saída APENAS em JSON válido: um objeto com chaves exatamente "assunto" e "corpo_html".
 
 Responda somente o JSON, sem markdown."""
 
@@ -83,23 +106,15 @@ Responda somente o JSON, sem markdown."""
         model=GEMINI_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
-            temperature=0.85,
+            temperature=0.75,
         ),
     )
 
     raw = (resp.text or "").strip()
-    data = _parse_json_array(raw)
+    data = _parse_json_object(raw)
+    assunto = str(data.get("assunto", "")).strip()
+    corpo = str(data.get("corpo_html", "")).strip()
+    if not assunto or not corpo:
+        raise ValueError("A IA não retornou assunto e corpo válidos. Tente novamente.")
 
-    out: List[dict[str, str]] = []
-    for item in data[:3]:
-        if not isinstance(item, dict):
-            continue
-        assunto = str(item.get("assunto", "")).strip()
-        corpo = str(item.get("corpo_html", "")).strip()
-        if assunto and corpo:
-            out.append({"assunto": assunto, "corpo_html": corpo})
-
-    if len(out) < 3:
-        raise ValueError("A IA não retornou 3 variações válidas. Tente novamente.")
-
-    return out
+    return {"assunto": assunto, "corpo_html": corpo}

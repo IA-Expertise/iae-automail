@@ -1,11 +1,11 @@
 """
-IAE Sales Engine — painel Streamlit: higienização, blacklist, UTM, Gemini e envio SMTP.
+IAE Sales Engine — painel Streamlit: planilhas, higienização, blacklist, IA, layout rico e envio SMTP.
 Execute: streamlit run app.py
 """
 
 from __future__ import annotations
 
-import time
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -13,8 +13,9 @@ import streamlit as st
 
 from src.blacklist import apply_blacklist, load_blacklist
 from src.config import (
-    DADOS_DIR,
+    ANEXOS_DIR,
     DEFAULT_BLACKLIST,
+    EMAIL_ASSETS_DIR,
     FROM_EMAIL,
     GEMINI_API_KEY,
     SMTP_HOST,
@@ -23,26 +24,22 @@ from src.config import (
     SMTP_USER,
 )
 from src.domain_validation import validate_emails_column
-from src.gemini_client import aplicar_placeholders, gerar_variacoes_copy
+from src.email_layout import aplicar_layout_email
+from src.gemini_client import aplicar_placeholders, gerar_mensagem_campanha
 from src.mailer import (
     DELAY_MAX_S,
     DELAY_MIN_S,
     FilaEnvioInteligente,
     MAX_POR_HORA,
-    enviar_email_html,
+    enviar_email_avancado,
 )
+from src.planilhas_store import listar_planilhas, nome_seguro, PLANILHAS_DIR
 from src.utm_tracker import inject_utm_in_html
 
 COL_CIDADE = "Cidade"
 COL_EMAIL = "E-mail da Secretaria de Turismo"
 COL_SITE = "Site (Domínio Oficial)"
 COL_CATEGORIA = "Categoria"
-
-
-def _listar_csvs_dados() -> list[Path]:
-    if not DADOS_DIR.exists():
-        return []
-    return sorted(DADOS_DIR.glob("*.csv"), key=lambda p: p.name.lower())
 
 
 def _garantir_categoria(df: pd.DataFrame) -> pd.DataFrame:
@@ -57,28 +54,87 @@ def _filtrar_envio(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[m].copy()
 
 
+def _cidades_elegiveis(df: pd.DataFrame) -> list[str]:
+    if "status_higiene" in df.columns and "blacklist_bloqueado" in df.columns:
+        m = (df["status_higiene"] == "Válido") & (~df["blacklist_bloqueado"])
+        sub = df.loc[m]
+    else:
+        sub = df
+    return sorted(sub[COL_CIDADE].dropna().astype(str).unique().tolist())
+
+
+def _gemini_ok() -> bool:
+    return bool(
+        GEMINI_API_KEY
+        or os.environ.get("AI_INTEGRATIONS_GEMINI_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+    )
+
+
+def _garantir_dirs_midia() -> None:
+    EMAIL_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    ANEXOS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def main() -> None:
     st.set_page_config(page_title="IAE Sales Engine", layout="wide")
     st.title("IAE Sales Engine")
-    st.caption("Prospecção IAE Smart Guide — higienização, compliance, UTM e envio inteligente")
+    st.caption("Prospecção IAE Smart Guide — dados, compliance, IA e envio inteligente")
+
+    if st.session_state.get("ultimo_envio"):
+        u = st.session_state["ultimo_envio"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Último disparo — sucessos", u.get("sucesso", 0))
+        c2.metric("Último disparo — erros", u.get("erros", 0))
+        c3.metric("Destinatários previstos", u.get("total", 0))
 
     with st.sidebar:
-        st.header("Fonte de dados")
-        csvs = _listar_csvs_dados()
-        opcoes = [p.name for p in csvs]
-        if not opcoes:
-            st.warning("Nenhum .csv em /dados. Adicione arquivos ou use upload abaixo.")
-            arquivo_escolhido = None
+        st.header("Planilhas salvas")
+        paths = listar_planilhas()
+        if not paths:
+            st.warning("Nenhuma planilha .csv encontrada. Envie um arquivo abaixo.")
+            arquivo_path: Path | None = None
         else:
-            arquivo_escolhido = st.selectbox("Planilha em /dados", options=opcoes, index=0)
+            arquivo_path = st.selectbox(
+                "Arquivo ativo",
+                options=paths,
+                format_func=lambda p: p.name,
+                key="sel_planilha",
+            )
 
-        upload = st.file_uploader("Enviar nova planilha CSV", type=["csv"])
-        if upload is not None:
-            destino = DADOS_DIR / upload.name
-            DADOS_DIR.mkdir(parents=True, exist_ok=True)
-            destino.write_bytes(upload.getvalue())
-            st.success(f"Planilha '{upload.name}' salva!")
-            st.rerun()
+        up = st.file_uploader("Enviar CSV", type=["csv"], key="up_csv")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Salvar como novo", help="Grava em dados/planilhas/"):
+                if up is None:
+                    st.warning("Selecione um arquivo CSV.")
+                else:
+                    PLANILHAS_DIR.mkdir(parents=True, exist_ok=True)
+                    dest = PLANILHAS_DIR / nome_seguro(up.name)
+                    dest.write_bytes(up.getbuffer())
+                    st.success(f"Salvo: {dest.name}")
+                    st.rerun()
+        with c2:
+            if st.button("Substituir selecionada", help="Sobrescreve o arquivo escolhido na lista"):
+                if up is None:
+                    st.warning("Selecione um CSV para substituir.")
+                elif arquivo_path is None:
+                    st.warning("Não há planilha selecionada.")
+                else:
+                    arquivo_path.write_bytes(up.getbuffer())
+                    st.success(f"Atualizado: {arquivo_path.name}")
+                    st.rerun()
+
+        if arquivo_path is not None and st.button("Excluir planilha selecionada"):
+            if arquivo_path.resolve() == Path(DEFAULT_BLACKLIST).resolve():
+                st.error("Não é permitido excluir a blacklist.")
+            else:
+                try:
+                    arquivo_path.unlink()
+                    st.success("Arquivo removido.")
+                    st.rerun()
+                except OSError as e:
+                    st.error(str(e))
 
         st.header("Campanha (UTM)")
         utm_campaign = st.text_input(
@@ -91,20 +147,26 @@ def main() -> None:
         st.caption(str(DEFAULT_BLACKLIST))
         path_bl = st.text_input("Caminho blacklist.csv", value=str(DEFAULT_BLACKLIST))
 
-        st.header("Credenciais (.env)")
-        st.caption("SMTP e GEMINI_API_KEY devem estar no arquivo .env na raiz do projeto.")
+        st.header("Credenciais")
         ok_smtp = bool(SMTP_USER and SMTP_PASSWORD)
         st.write("SMTP:", "OK" if ok_smtp else "incompleto")
-        st.write("Gemini:", "OK" if GEMINI_API_KEY else "falta GEMINI_API_KEY")
+        st.write("Gemini / IA:", "OK" if _gemini_ok() else "falta chave")
 
-    # Carregar DataFrame
-    df: pd.DataFrame | None = None
-    if arquivo_escolhido:
-        path = DADOS_DIR / arquivo_escolhido
-        df = pd.read_csv(path)
+    if "assunto_campanha" not in st.session_state:
+        st.session_state["assunto_campanha"] = ""
+    if "corpo_campanha" not in st.session_state:
+        st.session_state["corpo_campanha"] = ""
 
-    if df is None or df.empty:
-        st.info("Carregue uma planilha para iniciar. Colunas esperadas: Cidade, E-mail da Secretaria de Turismo, Site (Domínio Oficial); opcional: Categoria.")
+    if arquivo_path is None:
+        st.info(
+            "Salve uma planilha em dados/planilhas/ ou coloque um .csv em dados/ (exceto blacklist). "
+            "Colunas: Cidade, E-mail da Secretaria de Turismo, Site (Domínio Oficial); opcional: Categoria."
+        )
+        return
+
+    df = pd.read_csv(arquivo_path)
+    if df.empty:
+        st.error("Planilha vazia.")
         return
 
     for col in (COL_CIDADE, COL_EMAIL, COL_SITE):
@@ -135,7 +197,7 @@ def main() -> None:
     with col3:
         st.metric("Linhas carregadas", len(df))
 
-    if st.button("Pipeline: validação + blacklist", help="Executa os dois passos em sequência"):
+    if st.button("Pipeline: validação + blacklist"):
         with st.status("Processando pipeline...", expanded=True) as status:
             status.write("Validando Domínios")
             df_v = validate_emails_column(df, COL_EMAIL)
@@ -159,44 +221,104 @@ def main() -> None:
         bl = int(df_work["blacklist_bloqueado"].sum())
         st.metric("Bloqueados por blacklist", bl)
 
-    st.subheader("Prévia dos dados (após processamento)")
+    op_cidades = _cidades_elegiveis(df_work)
+    if not op_cidades:
+        st.warning("Nenhuma cidade elegível na base atual. Verifique a planilha ou execute o pipeline.")
+        cidades_alvo: list[str] = []
+    else:
+        cidades_alvo = st.multiselect(
+            "Cidades alvo da campanha (após pipeline, só entram elegíveis)",
+            options=op_cidades,
+            default=op_cidades,
+            help="Restringe o disparo às cidades selecionadas. Elegível = domínio válido e fora da blacklist.",
+        )
+
+    st.subheader("Prévia dos dados")
     st.dataframe(df_work, use_container_width=True)
 
     st.divider()
-    st.subheader("Criação de campanha com IA (Gemini)")
-    idx_var = st.number_input("Variação escolhida (1 a 3)", min_value=1, max_value=3, value=1)
+    st.subheader("Instruções para a IA + mensagem")
+    instrucoes = st.text_area(
+        "Estratégia e informações dos produtos/serviços",
+        height=160,
+        placeholder=(
+            "Ex.: mencionar quiosque de informações, app móvel, integração com MIT; "
+            "tom consultivo; CTA agendar demo; diferenciais em relação a concorrentes…"
+        ),
+        help="A IA usa este texto com prioridade para gerar assunto e corpo com placeholders {{CIDADE}} e {{CATEGORIA}}.",
+    )
 
-    if st.button("Gerar 3 variações com Gemini"):
-        try:
-            primeira = df_work.iloc[0]
-            vars_copy = gerar_variacoes_copy(
-                str(primeira[COL_CIDADE]),
-                str(primeira[COL_CATEGORIA]),
-                str(primeira[COL_SITE]),
-            )
-            st.session_state["variacoes_ia"] = vars_copy
-            st.success("3 variações geradas.")
-        except Exception as e:
-            st.error(str(e))
+    if st.button("Gerar mensagem com Gemini"):
+        if not _gemini_ok():
+            st.error("Configure a integração Gemini (Replit) ou GEMINI_API_KEY.")
+        else:
+            try:
+                ex = df_work.iloc[0]
+                msg = gerar_mensagem_campanha(
+                    str(ex[COL_CIDADE]),
+                    str(ex[COL_CATEGORIA]),
+                    str(ex[COL_SITE]),
+                    instrucoes,
+                )
+                st.session_state["assunto_campanha"] = msg["assunto"]
+                st.session_state["corpo_campanha"] = msg["corpo_html"]
+                st.success("Mensagem gerada. Edite abaixo se quiser refinar.")
+            except Exception as e:
+                st.error(str(e))
 
-    if "variacoes_ia" in st.session_state:
-        vars_copy = st.session_state["variacoes_ia"]
-        for i, item in enumerate(vars_copy, start=1):
-            with st.expander(f"Variação {i}"):
-                st.write("**Assunto:**", item.get("assunto", ""))
-                st.markdown(item.get("corpo_html", ""), unsafe_allow_html=True)
+    st.text_input("Assunto (template com {{CIDADE}} / {{CATEGORIA}})", key="assunto_campanha")
+    st.text_area("Corpo HTML (editável)", key="corpo_campanha", height=360)
+
+    st.divider()
+    st.subheader("Aparência e anexos")
+    _garantir_dirs_midia()
+
+    usar_banner = st.checkbox(
+        "Incluir imagem no topo do e-mail (layout mais impactante)",
+        value=False,
+        help="A imagem é embutida no e-mail (inline). Boas opções: quiosque, tela do app ou logo em alta resolução.",
+    )
+    img_up = st.file_uploader(
+        "Imagem do banner (PNG, JPG ou WebP)",
+        type=["png", "jpg", "jpeg", "webp"],
+        help="Largura recomendada ~560–800 px. Arquivo leve para abrir rápido no celular.",
+    )
+    if img_up is not None:
+        ext = Path(img_up.name).suffix.lower() or ".png"
+        banner_path = EMAIL_ASSETS_DIR / f"banner_campanha{ext}"
+        banner_path.write_bytes(img_up.getbuffer())
+        st.session_state["banner_path"] = str(banner_path)
+        st.image(img_up.getbuffer(), caption="Prévia do banner", width=400)
+
+    anexar_pdf = st.checkbox("Anexar PDF (apresentação leve)", value=False)
+    pdf_up = st.file_uploader("Arquivo PDF", type=["pdf"], help="Prefira arquivos pequenos (ex.: até 2–3 MB) para boa entrega.")
+    if pdf_up is not None:
+        if pdf_up.size > 4 * 1024 * 1024:
+            st.warning("PDF acima de 4 MB pode falhar em alguns servidores. Considere compactar.")
+        raw_name = Path(pdf_up.name).name.replace("..", "").strip() or "apresentacao.pdf"
+        if not raw_name.lower().endswith(".pdf"):
+            raw_name = f"{raw_name}.pdf"
+        pdf_path = ANEXOS_DIR / raw_name
+        pdf_path.write_bytes(pdf_up.getbuffer())
+        st.session_state["pdf_path"] = str(pdf_path)
+        st.caption(f"Salvo: {pdf_path.name}")
+
+    banner_disk = Path(st.session_state["banner_path"]) if st.session_state.get("banner_path") else None
+    pdf_disk = Path(st.session_state["pdf_path"]) if st.session_state.get("pdf_path") else None
+    if usar_banner and (not banner_disk or not banner_disk.exists()):
+        st.info("Envie uma imagem acima para o banner aparecer no e-mail.")
 
     st.divider()
     st.subheader("Envio de teste")
 
-    col_teste1, col_teste2 = st.columns([3, 1])
-    with col_teste1:
+    col_te1, col_te2 = st.columns([3, 1])
+    with col_te1:
         email_teste = st.text_input(
             "E-mail para teste",
             placeholder="seuemail@exemplo.com",
-            help="Envia uma prévia da variação escolhida para validar antes de disparar a campanha.",
+            help="Usa o assunto/corpo editados acima, com UTM e layout escolhidos.",
         )
-    with col_teste2:
+    with col_te2:
         st.write("")
         st.write("")
         btn_teste = st.button("Enviar teste", use_container_width=True)
@@ -204,63 +326,81 @@ def main() -> None:
     if btn_teste:
         if not email_teste:
             st.warning("Digite um endereço de e-mail para o teste.")
-        elif "variacoes_ia" not in st.session_state:
-            st.error("Gere as variações com Gemini antes de enviar o teste.")
+        elif not st.session_state.get("assunto_campanha") or not st.session_state.get("corpo_campanha"):
+            st.error("Gere a mensagem com a IA ou preencha assunto e corpo.")
         elif not ok_smtp:
-            st.error("Configure SMTP_USER e SMTP_PASSWORD nas variáveis de ambiente.")
+            st.error("Configure SMTP_USER e SMTP_PASSWORD.")
         else:
-            variacoes = st.session_state["variacoes_ia"]
-            escolha = variacoes[int(idx_var) - 1]
-            cidade_ex = str(df_work.iloc[0][COL_CIDADE]) if not df_work.empty else "Cidade Exemplo"
-            categoria_ex = str(df_work.iloc[0][COL_CATEGORIA]) if not df_work.empty else "Categoria Exemplo"
+            cidade_ex = str(df_work.iloc[0][COL_CIDADE]) if not df_work.empty else "Cidade"
+            categoria_ex = str(df_work.iloc[0][COL_CATEGORIA]) if not df_work.empty else "Categoria"
             assunto_ex, corpo_ex = aplicar_placeholders(
-                escolha["assunto"], escolha["corpo_html"], cidade_ex, categoria_ex
+                st.session_state["assunto_campanha"],
+                st.session_state["corpo_campanha"],
+                cidade_ex,
+                categoria_ex,
             )
             corpo_ex = inject_utm_in_html(corpo_ex, utm_campaign or "prospeccao", cidade_ex)
+            com_b = usar_banner and banner_disk is not None and banner_disk.exists()
+            html_body = aplicar_layout_email(corpo_ex, com_b)
+            pdf_p = pdf_disk if anexar_pdf and pdf_disk and pdf_disk.exists() else None
+            img_p = banner_disk if com_b else None
             try:
-                enviar_email_html(
-                    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD,
-                    FROM_EMAIL, email_teste,
-                    f"[TESTE] {assunto_ex}", corpo_ex,
+                enviar_email_avancado(
+                    SMTP_HOST,
+                    SMTP_PORT,
+                    SMTP_USER,
+                    SMTP_PASSWORD,
+                    FROM_EMAIL,
+                    email_teste,
+                    f"[TESTE] {assunto_ex}",
+                    html_body,
+                    imagem_inline=img_p,
+                    anexo_pdf=pdf_p,
                 )
                 st.success(f"E-mail de teste enviado para {email_teste}!")
             except Exception as e:
                 st.error(f"Falha ao enviar teste: {e}")
 
     st.divider()
-    st.subheader("Envio")
+    st.subheader("Envio da campanha")
 
     limite_teste = st.number_input("Máximo de e-mails nesta execução (0 = todos elegíveis)", min_value=0, value=0)
 
     if st.button("Enviar campanha", type="primary"):
         st.session_state["last_errors"] = []
-        if "variacoes_ia" not in st.session_state:
-            st.error("Gere as variações com Gemini antes de enviar.")
+        if not st.session_state.get("assunto_campanha") or not st.session_state.get("corpo_campanha"):
+            st.error("Gere a mensagem com a IA ou preencha assunto e corpo.")
             return
         if not ok_smtp:
-            st.error("Configure SMTP_USER e SMTP_PASSWORD no .env")
+            st.error("Configure SMTP_USER e SMTP_PASSWORD.")
             return
         if "status_higiene" not in df_work.columns:
-            st.error('Execute primeiro "Validar domínios" ou o pipeline completo.')
+            st.error('Execute o pipeline ou "Validar domínios".')
             return
         if "blacklist_bloqueado" not in df_work.columns:
-            st.error('Execute "Aplicar blacklist" ou o pipeline completo antes do envio.')
+            st.error("Execute a blacklist ou o pipeline completo.")
+            return
+        if not cidades_alvo:
+            st.warning("Selecione ao menos uma cidade alvo.")
             return
 
         filtrado = _filtrar_envio(df_work)
+        filtrado = filtrado[filtrado[COL_CIDADE].astype(str).isin(cidades_alvo)]
         if filtrado.empty:
-            st.warning("Nenhum destinatário elegível (válido + fora da blacklist).")
+            st.warning("Nenhum destinatário elegível com os filtros atuais.")
             return
 
-        variacoes = st.session_state["variacoes_ia"]
-        escolha = variacoes[int(idx_var) - 1]
-        assunto_tpl = escolha["assunto"]
-        corpo_tpl = escolha["corpo_html"]
+        assunto_tpl = st.session_state["assunto_campanha"]
+        corpo_tpl = st.session_state["corpo_campanha"]
 
         fila = FilaEnvioInteligente()
         sucesso = 0
         erros = 0
         total = len(filtrado) if limite_teste == 0 else min(len(filtrado), int(limite_teste))
+
+        com_b = usar_banner and banner_disk is not None and banner_disk.exists()
+        pdf_p = pdf_disk if anexar_pdf and pdf_disk and pdf_disk.exists() else None
+        img_p = banner_disk if com_b else None
 
         progress = st.progress(0.0)
         log_box = st.empty()
@@ -276,11 +416,12 @@ def main() -> None:
                 email = str(row[COL_EMAIL]).strip()
 
                 assunto, corpo = aplicar_placeholders(assunto_tpl, corpo_tpl, cidade, categoria)
-                corpo_final = inject_utm_in_html(corpo, utm_campaign or "prospeccao", cidade)
+                corpo = inject_utm_in_html(corpo, utm_campaign or "prospeccao", cidade)
+                html_body = aplicar_layout_email(corpo, com_b)
 
                 fila.aguardar_vaga_hora()
                 try:
-                    enviar_email_html(
+                    enviar_email_avancado(
                         SMTP_HOST,
                         SMTP_PORT,
                         SMTP_USER,
@@ -288,7 +429,9 @@ def main() -> None:
                         FROM_EMAIL,
                         email,
                         assunto,
-                        corpo_final,
+                        html_body,
+                        imagem_inline=img_p,
+                        anexo_pdf=pdf_p,
                     )
                     fila.registrar_envio()
                     sucesso += 1
@@ -303,6 +446,12 @@ def main() -> None:
                     fila.pausa_entre_envios()
 
             status.update(label="Envio finalizado", state="complete")
+
+        st.session_state["ultimo_envio"] = {
+            "sucesso": sucesso,
+            "erros": erros,
+            "total": total,
+        }
 
         st.subheader("Resultado")
         res_df = pd.DataFrame({"Tipo": ["Sucesso", "Erros"], "Quantidade": [sucesso, erros]})

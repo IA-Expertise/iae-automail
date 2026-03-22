@@ -8,6 +8,8 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 DADOS_DIR = BASE_DIR / "dados"
 DEFAULT_BLACKLIST = DADOS_DIR / "blacklist.csv"
+EMAIL_ASSETS_DIR = DADOS_DIR / "email_assets"
+ANEXOS_DIR = DADOS_DIR / "anexos"
 
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.iaesmartguide.com.br")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
