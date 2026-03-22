@@ -45,3 +45,7 @@ SMTP_PORT = "587"
 FROM_EMAIL = "turismo@iaesmartguide.com.br"
 SMTP_USER = "turismo@iaesmartguide.com.br"
 GEMINI_MODEL = "gemini-2.0-flash"
+
+[deployment]
+deploymentTarget = "vm"
+run = ["streamlit", "run", "app.py", "--server.port=5000", "--server.address=0.0.0.0"]
