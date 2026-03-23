@@ -133,6 +133,8 @@ def _salvar_relatorio_disco() -> None:
         "last_errors": st.session_state.get("last_errors", []),
         "relatorio_em": st.session_state.get("relatorio_em", ""),
         "relatorio_utm": st.session_state.get("relatorio_utm", ""),
+        "envio_status": st.session_state.get("envio_status", ""),
+        "processados": st.session_state.get("processados", 0),
     }
     RELATORIO_FILE.parent.mkdir(parents=True, exist_ok=True)
     RELATORIO_FILE.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -150,6 +152,8 @@ def _carregar_relatorio_disco() -> None:
         st.session_state["last_errors"] = dados.get("last_errors", [])
         st.session_state["relatorio_em"] = dados.get("relatorio_em", "")
         st.session_state["relatorio_utm"] = dados.get("relatorio_utm", "")
+        st.session_state["envio_status"] = dados.get("envio_status", "")
+        st.session_state["processados"] = dados.get("processados", 0)
     except Exception:
         pass
 
@@ -167,6 +171,10 @@ def _secao_download_relatorio() -> None:
     csv_bytes = _montar_relatorio_csv(sucessos, erros)
 
     st.subheader(f"Último envio — {quando}")
+    status_envio = st.session_state.get("envio_status", "")
+    processados = int(st.session_state.get("processados", 0) or 0)
+    if status_envio:
+        st.caption(f"Status: {status_envio} | Processados: {processados}/{ult.get('total', 0)}")
     res_df = pd.DataFrame(
         {"Tipo": ["Sucesso", "Erros"], "Quantidade": [ult.get("sucesso", 0), ult.get("erros", 0)]}
     )
@@ -530,6 +538,12 @@ def main() -> None:
 
     st.divider()
     st.subheader("Envio da campanha")
+    if st.session_state.get("ultimo_envio"):
+        ult = st.session_state["ultimo_envio"]
+        st.info(
+            f"{int(ult.get('sucesso', 0))} e-mails enviados com sucesso | "
+            f"{int(ult.get('erros', 0))} e-mails com falha na entrega"
+        )
 
     limite_teste = st.number_input("Máximo de e-mails nesta execução (0 = todos elegíveis)", min_value=0, value=0)
 
@@ -565,10 +579,18 @@ def main() -> None:
         sucesso = 0
         erros = 0
         total = len(filtrado) if limite_teste == 0 else min(len(filtrado), int(limite_teste))
+        processados = 0
 
         com_b = usar_banner and banner_disk is not None and banner_disk.exists()
         pdf_p = pdf_disk if anexar_pdf and pdf_disk and pdf_disk.exists() else None
         img_p = banner_disk if com_b else None
+
+        st.session_state["envio_status"] = "em_andamento"
+        st.session_state["processados"] = 0
+        st.session_state["ultimo_envio"] = {"sucesso": 0, "erros": 0, "total": total}
+        st.session_state["relatorio_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state["relatorio_utm"] = utm_campaign or "prospeccao"
+        _salvar_relatorio_disco()
 
         progress = st.progress(0.0)
         log_box = st.empty()
@@ -615,8 +637,13 @@ def main() -> None:
                     erros += 1
                     st.session_state["last_errors"].append({"email": email, "erro": str(e)})
 
-                progress.progress((i + 1) / max(total, 1))
-                log_box.caption(f"Processados: {i + 1}/{total} | OK: {sucesso} | Erro: {erros}")
+                processados = i + 1
+                st.session_state["processados"] = processados
+                st.session_state["ultimo_envio"] = {"sucesso": sucesso, "erros": erros, "total": total}
+                _salvar_relatorio_disco()
+
+                progress.progress(processados / max(total, 1))
+                log_box.caption(f"Processados: {processados}/{total} | OK: {sucesso} | Erro: {erros}")
 
                 if i + 1 < total:
                     fila.pausa_entre_envios(
@@ -628,18 +655,19 @@ def main() -> None:
 
             status.update(label="Envio finalizado", state="complete")
 
-        st.session_state["ultimo_envio"] = {
-            "sucesso": sucesso,
-            "erros": erros,
-            "total": total,
-        }
-        st.session_state["relatorio_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state["relatorio_utm"] = utm_campaign or "prospeccao"
+        st.session_state["envio_status"] = "finalizado"
+        st.session_state["processados"] = processados
+        st.session_state["ultimo_envio"] = {"sucesso": sucesso, "erros": erros, "total": total}
         _salvar_relatorio_disco()
 
         st.subheader("Resultado")
         res_df = pd.DataFrame({"Tipo": ["Sucesso", "Erros"], "Quantidade": [sucesso, erros]})
         st.bar_chart(res_df.set_index("Tipo"))
+        st.success(f"{sucesso} e-mails enviados com sucesso")
+        if erros > 0:
+            st.error(f"{erros} e-mails com falha na entrega")
+        else:
+            st.caption("0 e-mails com falha na entrega")
         st.caption(
             f"Fila inteligente: até {MAX_POR_HORA} envios por hora; "
             f"intervalo aleatório de {DELAY_MIN_S} a {DELAY_MAX_S} s entre envios."
