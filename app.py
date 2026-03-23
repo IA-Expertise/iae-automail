@@ -5,6 +5,7 @@ Execute: streamlit run app.py
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -122,6 +123,37 @@ def _normalizar_erros_sessao() -> tuple[list[dict], list[dict]]:
     return sucessos, out
 
 
+RELATORIO_FILE = Path("dados/ultimo_relatorio.json")
+
+
+def _salvar_relatorio_disco() -> None:
+    dados = {
+        "ultimo_envio": st.session_state.get("ultimo_envio"),
+        "last_successes": st.session_state.get("last_successes", []),
+        "last_errors": st.session_state.get("last_errors", []),
+        "relatorio_em": st.session_state.get("relatorio_em", ""),
+        "relatorio_utm": st.session_state.get("relatorio_utm", ""),
+    }
+    RELATORIO_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RELATORIO_FILE.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _carregar_relatorio_disco() -> None:
+    if st.session_state.get("ultimo_envio"):
+        return
+    if not RELATORIO_FILE.exists():
+        return
+    try:
+        dados = json.loads(RELATORIO_FILE.read_text(encoding="utf-8"))
+        st.session_state["ultimo_envio"] = dados.get("ultimo_envio")
+        st.session_state["last_successes"] = dados.get("last_successes", [])
+        st.session_state["last_errors"] = dados.get("last_errors", [])
+        st.session_state["relatorio_em"] = dados.get("relatorio_em", "")
+        st.session_state["relatorio_utm"] = dados.get("relatorio_utm", "")
+    except Exception:
+        pass
+
+
 def _secao_download_relatorio() -> None:
     ult = st.session_state.get("ultimo_envio")
     if not ult:
@@ -133,6 +165,19 @@ def _secao_download_relatorio() -> None:
 
     txt = _montar_relatorio_txt(ult, sucessos, erros, quando, utm)
     csv_bytes = _montar_relatorio_csv(sucessos, erros)
+
+    st.subheader(f"Último envio — {quando}")
+    res_df = pd.DataFrame(
+        {"Tipo": ["Sucesso", "Erros"], "Quantidade": [ult.get("sucesso", 0), ult.get("erros", 0)]}
+    )
+    st.bar_chart(res_df.set_index("Tipo"))
+    if erros:
+        with st.expander(f"Erros ({len(erros)})"):
+            for row in erros[-50:]:
+                if isinstance(row, dict):
+                    st.text(f"{row.get('email', '')}: {row.get('erro', '')}")
+                else:
+                    st.text(str(row))
 
     st.subheader("Relatório para download")
     c1, c2 = st.columns(2)
@@ -193,6 +238,8 @@ def main() -> None:
     st.set_page_config(page_title="IAE Sales Engine", layout="wide")
     st.title("IAE Sales Engine")
     st.caption("Prospecção IAE Smart Guide — dados, compliance, IA e envio inteligente")
+
+    _carregar_relatorio_disco()
 
     if st.session_state.get("ultimo_envio"):
         u = st.session_state["ultimo_envio"]
@@ -578,6 +625,7 @@ def main() -> None:
         }
         st.session_state["relatorio_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         st.session_state["relatorio_utm"] = utm_campaign or "prospeccao"
+        _salvar_relatorio_disco()
 
         st.subheader("Resultado")
         res_df = pd.DataFrame({"Tipo": ["Sucesso", "Erros"], "Quantidade": [sucesso, erros]})
