@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+from src import campaign_runner
 from src.blacklist import apply_blacklist, load_blacklist
 from src.config import (
     ANEXOS_DIR,
@@ -31,7 +33,6 @@ from src.gemini_client import aplicar_placeholders, gerar_mensagem_campanha
 from src.mailer import (
     DELAY_MAX_S,
     DELAY_MIN_S,
-    FilaEnvioInteligente,
     MAX_POR_HORA,
     enviar_email_avancado,
 )
@@ -600,9 +601,20 @@ def main() -> None:
 
     limite_teste = st.number_input("Máximo de e-mails nesta execução (0 = todos elegíveis)", min_value=0, value=0)
 
-    if st.button("Enviar campanha", type="primary"):
-        st.session_state["last_errors"] = []
-        st.session_state["last_successes"] = []
+    col_btn, col_cancel = st.columns([3, 1])
+    with col_btn:
+        btn_enviar = st.button(
+            "Enviar campanha",
+            type="primary",
+            disabled=campaign_runner.is_running(),
+            use_container_width=True,
+        )
+    with col_cancel:
+        if campaign_runner.is_running():
+            if st.button("Cancelar", use_container_width=True):
+                campaign_runner.cancel()
+
+    if btn_enviar:
         if not st.session_state.get("assunto_campanha") or not st.session_state.get("corpo_campanha"):
             st.error("Gere a mensagem com a IA ou preencha assunto e corpo.")
             return
@@ -625,105 +637,80 @@ def main() -> None:
             st.warning("Nenhum destinatário elegível com os filtros atuais.")
             return
 
-        assunto_tpl = st.session_state["assunto_campanha"]
-        corpo_tpl = st.session_state["corpo_campanha"]
-
-        fila = FilaEnvioInteligente()
-        sucesso = 0
-        erros = 0
         total = len(filtrado) if limite_teste == 0 else min(len(filtrado), int(limite_teste))
-        processados = 0
-
         com_b = usar_banner and banner_disk is not None and banner_disk.exists()
         pdf_p = pdf_disk if anexar_pdf and pdf_disk and pdf_disk.exists() else None
         img_p = banner_disk if com_b else None
 
-        st.session_state["envio_status"] = "em_andamento"
-        st.session_state["motivo_interrupcao"] = ""
-        st.session_state["processados"] = 0
-        st.session_state["ultimo_envio"] = {"sucesso": 0, "erros": 0, "total": total}
-        st.session_state["destinatarios_planejados"] = [
-            {"email": str(r[COL_EMAIL]).strip(), "cidade": str(r[COL_CIDADE])}
+        destinatarios = [
+            {
+                "email": str(r[COL_EMAIL]).strip(),
+                "cidade": str(r[COL_CIDADE]),
+                "categoria": str(r[COL_CATEGORIA]),
+            }
             for _, r in filtrado.head(total).iterrows()
         ]
-        st.session_state["relatorio_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state["relatorio_utm"] = utm_campaign or "prospeccao"
-        _salvar_relatorio_disco()
 
-        progress = st.progress(0.0)
-        log_box = st.empty()
+        iniciou = campaign_runner.start_campaign(
+            smtp_host=SMTP_HOST,
+            smtp_port=SMTP_PORT,
+            smtp_user=SMTP_USER,
+            smtp_password=SMTP_PASSWORD,
+            from_email=FROM_EMAIL,
+            destinatarios=destinatarios,
+            assunto_tpl=st.session_state["assunto_campanha"],
+            corpo_tpl=st.session_state["corpo_campanha"],
+            utm_campaign=utm_campaign or "prospeccao",
+            usar_testeira=usar_testeira,
+            com_banner=com_b,
+            img_path=img_p,
+            pdf_path=pdf_p,
+            relatorio_file=RELATORIO_FILE,
+        )
+        if not iniciou:
+            st.warning("Já existe uma campanha em andamento.")
+        st.rerun()
 
-        with st.status("Enviando...", expanded=True) as status:
-            status.write("Enviando...")
-            for i, (_, row) in enumerate(filtrado.iterrows()):
-                if limite_teste and i >= limite_teste:
-                    break
+    cs = campaign_runner.get_state()
 
-                cidade = str(row[COL_CIDADE])
-                categoria = str(row[COL_CATEGORIA])
-                email = str(row[COL_EMAIL]).strip()
+    if cs["status"] in ("em_andamento",) or cs["running"]:
+        total = cs["total"]
+        processados = cs["processados"]
+        sucesso = cs["sucesso"]
+        erros = cs["erros"]
 
-                assunto, corpo = aplicar_placeholders(assunto_tpl, corpo_tpl, cidade, categoria)
-                corpo = preparar_links_campanha(corpo, utm_campaign or "prospeccao", cidade)
-                html_body = aplicar_layout_email(
-                    corpo, com_testeira=usar_testeira, com_imagem=com_b
-                )
+        st.info(f"Campanha em andamento — {processados}/{total} processados")
+        st.progress(processados / max(total, 1))
+        st.caption(cs.get("log", ""))
+        st.caption(
+            f"Fila inteligente: até {MAX_POR_HORA} envios/hora | "
+            f"intervalo {DELAY_MIN_S}–{DELAY_MAX_S}s entre envios."
+        )
+        time.sleep(2)
+        st.rerun()
 
-                fila.aguardar_vaga_hora(
-                    on_tick=lambda rest: log_box.caption(
-                        f"Processados: {i}/{total} | OK: {sucesso} | Erro: {erros} | "
-                        f"Aguardando janela horária: {int(rest)}s"
-                    )
-                )
-                try:
-                    enviar_email_avancado(
-                        SMTP_HOST,
-                        SMTP_PORT,
-                        SMTP_USER,
-                        SMTP_PASSWORD,
-                        FROM_EMAIL,
-                        email,
-                        assunto,
-                        html_body,
-                        imagem_inline=img_p,
-                        anexo_pdf=pdf_p,
-                    )
-                    fila.registrar_envio()
-                    sucesso += 1
-                    st.session_state["last_successes"].append({"email": email, "cidade": cidade})
-                except Exception as e:
-                    erros += 1
-                    st.session_state["last_errors"].append({"email": email, "erro": str(e)})
+    elif cs["status"] == "finalizado" and cs["total"] > 0:
+        sucesso = cs["sucesso"]
+        erros = cs["erros"]
+        total = cs["total"]
+        processados = cs["processados"]
+        nao_proc = max(0, total - processados)
 
-                processados = i + 1
-                st.session_state["processados"] = processados
-                st.session_state["ultimo_envio"] = {"sucesso": sucesso, "erros": erros, "total": total}
-                _salvar_relatorio_disco()
-
-                progress.progress(processados / max(total, 1))
-                log_box.caption(f"Processados: {processados}/{total} | OK: {sucesso} | Erro: {erros}")
-
-                if i + 1 < total:
-                    fila.pausa_entre_envios(
-                        on_tick=lambda rest: log_box.caption(
-                            f"Processados: {i + 1}/{total} | OK: {sucesso} | Erro: {erros} | "
-                            f"Próximo envio em {int(rest)}s"
-                        )
-                    )
-
-            status.update(label="Envio finalizado", state="complete")
-
-        st.session_state["envio_status"] = "finalizado"
-        st.session_state["processados"] = processados
         st.session_state["ultimo_envio"] = {"sucesso": sucesso, "erros": erros, "total": total}
-        _salvar_relatorio_disco()
+        st.session_state["last_successes"] = cs["last_successes"]
+        st.session_state["last_errors"] = cs["last_errors"]
+        st.session_state["relatorio_em"] = cs["relatorio_em"]
+        st.session_state["relatorio_utm"] = cs["relatorio_utm"]
+        st.session_state["envio_status"] = cs["status"]
+        st.session_state["processados"] = processados
+        st.session_state["destinatarios_planejados"] = cs["destinatarios_planejados"]
+        st.session_state["motivo_interrupcao"] = cs["motivo_interrupcao"]
 
-        st.subheader("Resultado")
-        nao_processados = max(0, total - processados)
+        st.subheader("Resultado da campanha")
         res_df = pd.DataFrame(
             {
                 "Tipo": ["Sucesso", "Erros", "Não processados"],
-                "Quantidade": [sucesso, erros, nao_processados],
+                "Quantidade": [sucesso, erros, nao_proc],
             }
         )
         st.bar_chart(res_df.set_index("Tipo"))
@@ -732,19 +719,19 @@ def main() -> None:
             st.error(f"{erros} e-mails com falha na entrega")
         else:
             st.caption("0 e-mails com falha na entrega")
-        if nao_processados > 0:
-            st.warning(f"{nao_processados} e-mails não processados nesta execução")
-            st.caption("Motivo provável: execução interrompida durante a fila (timeout/restart/reload).")
+        if nao_proc > 0:
+            st.warning(f"{nao_proc} e-mails não processados nesta execução")
+            st.caption("Motivo provável: execução interrompida durante a fila (cancelamento/restart).")
         else:
             st.caption("0 e-mails não processados")
         st.caption(
-            f"Fila inteligente: até {MAX_POR_HORA} envios por hora; "
-            f"intervalo aleatório de {DELAY_MIN_S} a {DELAY_MAX_S} s entre envios."
+            f"Fila inteligente: até {MAX_POR_HORA} envios/hora | "
+            f"intervalo {DELAY_MIN_S}–{DELAY_MAX_S}s entre envios."
         )
 
-        if st.session_state.get("last_errors"):
-            with st.expander("Últimos erros"):
-                for row in st.session_state["last_errors"][-20:]:
+        if cs["last_errors"]:
+            with st.expander(f"Erros ({len(cs['last_errors'])})"):
+                for row in cs["last_errors"][-20:]:
                     if isinstance(row, dict):
                         st.text(f"{row.get('email', '')}: {row.get('erro', '')}")
                     else:
