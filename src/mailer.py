@@ -14,7 +14,7 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Deque, Optional
+from typing import Callable, Deque, Optional
 
 MAX_POR_HORA = 90
 DELAY_MIN_S = 45
@@ -30,20 +30,42 @@ class FilaEnvioInteligente:
         while self._timestamps and agora - self._timestamps[0] >= 3600:
             self._timestamps.popleft()
 
-    def aguardar_vaga_hora(self) -> None:
+    def _sleep_com_feedback(
+        self,
+        seconds: float,
+        on_tick: Optional[Callable[[float], None]] = None,
+    ) -> None:
+        """Dorme em passos curtos para manter a UI viva em hosts como Replit."""
+        restante = max(0.0, float(seconds))
+        while restante > 0:
+            passo = 1.0 if restante > 1.0 else restante
+            time.sleep(passo)
+            restante -= passo
+            if on_tick:
+                on_tick(max(0.0, restante))
+
+    def aguardar_vaga_hora(
+        self,
+        on_tick: Optional[Callable[[float], None]] = None,
+    ) -> None:
         """Garante menos de 90 envios na janela móvel de 1 hora."""
         while True:
             self._limpar_antigos()
             if len(self._timestamps) < MAX_POR_HORA:
                 return
             espera = 3600 - (time.time() - self._timestamps[0]) + 0.5
-            time.sleep(max(1.0, espera))
+            self._sleep_com_feedback(max(1.0, espera), on_tick=on_tick)
 
     def registrar_envio(self) -> None:
         self._timestamps.append(time.time())
 
-    def pausa_entre_envios(self) -> None:
-        time.sleep(random.uniform(DELAY_MIN_S, DELAY_MAX_S))
+    def pausa_entre_envios(
+        self,
+        on_tick: Optional[Callable[[float], None]] = None,
+    ) -> float:
+        tempo = random.uniform(DELAY_MIN_S, DELAY_MAX_S)
+        self._sleep_com_feedback(tempo, on_tick=on_tick)
+        return tempo
 
 
 def _plain_from_html(html_body: str, plain_fallback: Optional[str]) -> str:

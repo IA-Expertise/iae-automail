@@ -589,7 +589,12 @@ def main() -> None:
                     corpo, com_testeira=usar_testeira, com_imagem=com_b
                 )
 
-                fila.aguardar_vaga_hora()
+                fila.aguardar_vaga_hora(
+                    on_tick=lambda rest: log_box.caption(
+                        f"Processados: {i}/{total} | OK: {sucesso} | Erro: {erros} | "
+                        f"Aguardando janela horária: {int(rest)}s"
+                    )
+                )
                 try:
                     enviar_email_avancado(
                         SMTP_HOST,
@@ -614,7 +619,12 @@ def main() -> None:
                 log_box.caption(f"Processados: {i + 1}/{total} | OK: {sucesso} | Erro: {erros}")
 
                 if i + 1 < total:
-                    fila.pausa_entre_envios()
+                    fila.pausa_entre_envios(
+                        on_tick=lambda rest: log_box.caption(
+                            f"Processados: {i + 1}/{total} | OK: {sucesso} | Erro: {erros} | "
+                            f"Próximo envio em {int(rest)}s"
+                        )
+                    )
 
             status.update(label="Envio finalizado", state="complete")
 
