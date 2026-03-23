@@ -48,8 +48,10 @@ def _montar_relatorio_txt(
     ult: dict,
     sucessos: list[dict],
     erros: list[dict],
+    nao_processados: list[dict],
     quando: str,
     utm: str,
+    motivo_interrupcao: str,
 ) -> str:
     linhas = [
         "IAE Sales Engine — Relatório de envio",
@@ -62,10 +64,18 @@ def _montar_relatorio_txt(
         f"Total previsto nesta execução: {ult.get('total', 0)}",
         f"Enviados com sucesso: {ult.get('sucesso', 0)}",
         f"Falhas: {ult.get('erros', 0)}",
+        f"Não processados: {len(nao_processados)}",
+    ]
+    if motivo_interrupcao:
+        linhas.extend([
+            "",
+            f"Motivo provável dos não processados: {motivo_interrupcao}",
+        ])
+    linhas.extend([
         "",
         "Sucessos (ordem de envio)",
         "-" * 20,
-    ]
+    ])
     for i, s in enumerate(sucessos, 1):
         linhas.append(f"{i}. {s['email']} — {s.get('cidade', '')}")
     if not sucessos:
@@ -76,12 +86,17 @@ def _montar_relatorio_txt(
         linhas.append(f"   {e.get('erro', '')}")
     if not erros:
         linhas.append("(nenhum)")
+    linhas.extend(["", "Não processados", "-" * 20])
+    for i, n in enumerate(nao_processados, 1):
+        linhas.append(f"{i}. {n.get('email', '')} — {n.get('cidade', '')}")
+    if not nao_processados:
+        linhas.append("(nenhum)")
     linhas.append("")
     linhas.append("— Fim do relatório —")
     return "\n".join(linhas)
 
 
-def _montar_relatorio_csv(sucessos: list[dict], erros: list[dict]) -> bytes:
+def _montar_relatorio_csv(sucessos: list[dict], erros: list[dict], nao_processados: list[dict]) -> bytes:
     rows: list[dict] = []
     for s in sucessos:
         rows.append(
@@ -99,6 +114,15 @@ def _montar_relatorio_csv(sucessos: list[dict], erros: list[dict]) -> bytes:
                 "email": e["email"],
                 "cidade": "",
                 "erro": e.get("erro", ""),
+            }
+        )
+    for n in nao_processados:
+        rows.append(
+            {
+                "resultado": "nao_processado",
+                "email": n.get("email", ""),
+                "cidade": n.get("cidade", ""),
+                "erro": "",
             }
         )
     df = pd.DataFrame(rows)
@@ -123,6 +147,15 @@ def _normalizar_erros_sessao() -> tuple[list[dict], list[dict]]:
     return sucessos, out
 
 
+def _nao_processados_sessao() -> list[dict]:
+    planejados = list(st.session_state.get("destinatarios_planejados") or [])
+    if not planejados:
+        return []
+    processados = int(st.session_state.get("processados", 0) or 0)
+    processados = max(0, min(processados, len(planejados)))
+    return planejados[processados:]
+
+
 RELATORIO_FILE = Path("dados/ultimo_relatorio.json")
 
 
@@ -135,6 +168,8 @@ def _salvar_relatorio_disco() -> None:
         "relatorio_utm": st.session_state.get("relatorio_utm", ""),
         "envio_status": st.session_state.get("envio_status", ""),
         "processados": st.session_state.get("processados", 0),
+        "destinatarios_planejados": st.session_state.get("destinatarios_planejados", []),
+        "motivo_interrupcao": st.session_state.get("motivo_interrupcao", ""),
     }
     RELATORIO_FILE.parent.mkdir(parents=True, exist_ok=True)
     RELATORIO_FILE.write_text(json.dumps(dados, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -154,6 +189,8 @@ def _carregar_relatorio_disco() -> None:
         st.session_state["relatorio_utm"] = dados.get("relatorio_utm", "")
         st.session_state["envio_status"] = dados.get("envio_status", "")
         st.session_state["processados"] = dados.get("processados", 0)
+        st.session_state["destinatarios_planejados"] = dados.get("destinatarios_planejados", [])
+        st.session_state["motivo_interrupcao"] = dados.get("motivo_interrupcao", "")
     except Exception:
         pass
 
@@ -163,20 +200,34 @@ def _secao_download_relatorio() -> None:
     if not ult:
         return
     sucessos, erros = _normalizar_erros_sessao()
+    nao_processados = _nao_processados_sessao()
     quando = st.session_state.get("relatorio_em", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     utm = st.session_state.get("relatorio_utm", "")
+    motivo = st.session_state.get("motivo_interrupcao", "")
+    if not motivo and nao_processados:
+        status_envio = st.session_state.get("envio_status", "")
+        if status_envio == "em_andamento":
+            motivo = "Execução interrompida durante a fila (recarregamento da página, timeout ou restart do app)."
+        else:
+            motivo = "Lote não concluído nesta execução."
     slug = quando.replace(":", "-").replace(" ", "_")[:19]
 
-    txt = _montar_relatorio_txt(ult, sucessos, erros, quando, utm)
-    csv_bytes = _montar_relatorio_csv(sucessos, erros)
+    txt = _montar_relatorio_txt(ult, sucessos, erros, nao_processados, quando, utm, motivo)
+    csv_bytes = _montar_relatorio_csv(sucessos, erros, nao_processados)
 
     st.subheader(f"Último envio — {quando}")
     status_envio = st.session_state.get("envio_status", "")
     processados = int(st.session_state.get("processados", 0) or 0)
     if status_envio:
         st.caption(f"Status: {status_envio} | Processados: {processados}/{ult.get('total', 0)}")
+    if nao_processados:
+        st.warning(f"{len(nao_processados)} e-mails não processados nesta execução.")
+        st.caption(f"Motivo provável: {motivo}")
     res_df = pd.DataFrame(
-        {"Tipo": ["Sucesso", "Erros"], "Quantidade": [ult.get("sucesso", 0), ult.get("erros", 0)]}
+        {
+            "Tipo": ["Sucesso", "Erros", "Não processados"],
+            "Quantidade": [ult.get("sucesso", 0), ult.get("erros", 0), len(nao_processados)],
+        }
     )
     st.bar_chart(res_df.set_index("Tipo"))
     if erros:
@@ -540,9 +591,11 @@ def main() -> None:
     st.subheader("Envio da campanha")
     if st.session_state.get("ultimo_envio"):
         ult = st.session_state["ultimo_envio"]
+        nao_proc = _nao_processados_sessao()
         st.info(
             f"{int(ult.get('sucesso', 0))} e-mails enviados com sucesso | "
-            f"{int(ult.get('erros', 0))} e-mails com falha na entrega"
+            f"{int(ult.get('erros', 0))} e-mails com falha na entrega | "
+            f"{len(nao_proc)} não processados"
         )
 
     limite_teste = st.number_input("Máximo de e-mails nesta execução (0 = todos elegíveis)", min_value=0, value=0)
@@ -586,8 +639,13 @@ def main() -> None:
         img_p = banner_disk if com_b else None
 
         st.session_state["envio_status"] = "em_andamento"
+        st.session_state["motivo_interrupcao"] = ""
         st.session_state["processados"] = 0
         st.session_state["ultimo_envio"] = {"sucesso": 0, "erros": 0, "total": total}
+        st.session_state["destinatarios_planejados"] = [
+            {"email": str(r[COL_EMAIL]).strip(), "cidade": str(r[COL_CIDADE])}
+            for _, r in filtrado.head(total).iterrows()
+        ]
         st.session_state["relatorio_em"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         st.session_state["relatorio_utm"] = utm_campaign or "prospeccao"
         _salvar_relatorio_disco()
@@ -661,13 +719,24 @@ def main() -> None:
         _salvar_relatorio_disco()
 
         st.subheader("Resultado")
-        res_df = pd.DataFrame({"Tipo": ["Sucesso", "Erros"], "Quantidade": [sucesso, erros]})
+        nao_processados = max(0, total - processados)
+        res_df = pd.DataFrame(
+            {
+                "Tipo": ["Sucesso", "Erros", "Não processados"],
+                "Quantidade": [sucesso, erros, nao_processados],
+            }
+        )
         st.bar_chart(res_df.set_index("Tipo"))
         st.success(f"{sucesso} e-mails enviados com sucesso")
         if erros > 0:
             st.error(f"{erros} e-mails com falha na entrega")
         else:
             st.caption("0 e-mails com falha na entrega")
+        if nao_processados > 0:
+            st.warning(f"{nao_processados} e-mails não processados nesta execução")
+            st.caption("Motivo provável: execução interrompida durante a fila (timeout/restart/reload).")
+        else:
+            st.caption("0 e-mails não processados")
         st.caption(
             f"Fila inteligente: até {MAX_POR_HORA} envios por hora; "
             f"intervalo aleatório de {DELAY_MIN_S} a {DELAY_MAX_S} s entre envios."
